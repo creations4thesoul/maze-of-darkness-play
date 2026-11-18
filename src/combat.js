@@ -99,6 +99,7 @@ export function spit(game, x, y, ang, speed, col) {
   game.shots.push({x, y, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed, life: 3, hero: false, col});
 }
 
+const SILVER = {rat: 1, crawler: 1, spitter: 2, bloater: 2, wisp: 3, lurker: 3, brute: 5, hulk: 40, brood: 45, warden: 55, king: 0};
 function kill(game, t, owner) {
   const {x, y} = t, kind = t.type || "rat";
   if (kind === "bloater" && !t.burst) { t.burst = true; burstBloater(game, t); }
@@ -108,7 +109,13 @@ function kill(game, t, owner) {
   game.puff("dust", x, y, 5, [[.4, .37, .32], [.3, .28, .25]], 1.2);
   game.puff("spark", x, y, 6, kind === "rat" ? [1, .4, .35] : FOE[kind].col);
   sfx("kill", {pan: game.panOf(x)});
-  if (owner) { owner.kills = (owner.kills || 0) + 1; gainXp(game, owner, XP[kind]); owner.oil = Math.min(100, owner.oil + statOf(owner, "deathFuel")); }
+  if (owner) {
+    owner.kills = (owner.kills || 0) + 1; gainXp(game, owner, XP[kind]); owner.oil = Math.min(100, owner.oil + statOf(owner, "deathFuel"));
+    if (owner.hp < owner.maxHp && Math.random() < statOf(owner, "killHeal")) { owner.hp++; game.burst(owner.fx + 5, owner.fy - 6, [1, .35, .35]); }  // Blood Pact
+  }
+  // silver: more from bigger creatures, more with luck, double on the thorny way
+  const thorny = game.floorMods && game.floorMods[game.level] === "thorns";
+  game.addSilver(Math.round((SILVER[kind] || 1) * (1 + (owner ? statOf(owner, "silver") : 0)) * (thorny ? 2 : 1) * (.7 + Math.random() * .6)), x, y);
   const lv = game.lv, tx = x / T | 0, ty = y / T | 0, luck = 1 + (owner ? statOf(owner, "drop") : 0), r = Math.random() / luck;
   if (FOE[kind] && FOE[kind].boss) { game.dropGear(x - 8, y, 1); game.dropGear(x + 8, y, 1); }  // a boss always leaves fine gear
   else if (Math.random() < .035 * luck) game.dropGear(x, y, 0);

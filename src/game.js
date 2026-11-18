@@ -11,12 +11,13 @@ import {PIXEL, H as FACE_H, SPR, BASECOL} from "./art.js";
 import {GATES, ABILITIES, ABILITY_ORDER, RELICS, RELIC_KINDS} from "./gates.js";
 import {openGate, sealTile, FINAL_FLOOR} from "./level.js";
 import {UNLOCKS, loadMeta, progress, applyUnlocks} from "./meta.js";
-import {drawCards} from "./tarot.js";
+import {drawCards, synergyLines} from "./tarot.js";
 import {makeGear, BAG_SIZE, RARITY, GEAR_ICONS} from "./gear.js";
 import {statOf, refreshStats} from "./stats.js";
 import {touch} from "./touch.js";
 import {BUILD} from "./version.js";
 import {updateCardDraw, drawCardDraw, openInventory, updateInventory, drawInventory} from "./menus.js";
+import {openCrossroads, updateWay, drawWay} from "./waystations.js";
 import {PACK, newLore, nameOf, lookOf, stow, useItem, xpNeed, BUFF, TONIC_LOOKS, RUNE_LOOKS} from "./items.js";
 const BUFF_COL = {blaze: "#ff7a30", glow: "#ffe48a", swift: "#70f0b0", ward: "#9ad8ff"};
 
@@ -34,7 +35,7 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 const pick = (o, ks) => Object.fromEntries(ks.map(k => [k, o[k]]));
 // what a hero carries from floor to floor in a descent
 const CARRY = ["hp", "maxHp", "items", "sel", "xp", "lvl", "power", "kills", "buffs", "buffLook", "pack", "lens", "down",
-  "deck", "gear", "bag", "bonusHp", "cardsDue"];
+  "deck", "gear", "bag", "bonusHp", "cardsDue", "drawMin", "synergies", "synSeen"];
 const MENU = ["SOLO DESCENT", "CO-OP DESCENT", "HEAD TO HEAD", "UNLOCKS"], REVIVE_TIME = 1.5;
 const ROMAN = n => ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"][n] || String(n);
 const C = {text: "#c4e2f0", dim: "#5d7aa0", key: ART.runeColor, warn: "#ff5a5a", oil: "#ffa040", p1: ART.rimP1, p2: ART.rimP2};
@@ -101,6 +102,7 @@ export class Game {
     if (newRun) {
       this.runSeed = Math.random() * 1e6 | 0; this.lore = newLore(); this.floors = {}; this.abilities = new Set();
       this.players = players; this.killsSeen = 0; this.newUnlocks = [];
+      this.silver = 0; this.burns = 0; this.route = {}; this.floorMods = {};  // the purse, and the ways taken down
     }
     this.mode = this.players > 1 ? "coop" : "solo";
     this.enterFloor(n, "down", newRun ? null : this.heroes.map(h => pick(h, CARRY)));
@@ -119,6 +121,10 @@ export class Game {
       h.armed = false;  // stairs and grate only work once you've stepped off them
     });
     if (saved) this.applyFloor(saved);
+    else if (this.floorMods && this.floorMods[n] === "thorns") {  // the thorny way: every creature is tougher
+      for (const f of this.foes) if (!FOE[f.type].boss) { f.hp = Math.ceil(f.hp * 1.6); f.elite = true; }
+      this.toast("THE THORNY WAY: CREATURES ARE CRUEL HERE, SILVER DOUBLED", "#d86a4a");
+    }
     this.best = Math.max(this.best, n); save("mod-best", this.best);
     this.earn(m => { m.deepest = Math.max(m.deepest, n); });
   }
@@ -372,7 +378,7 @@ export class Game {
       if (this.state === "play" && this.mode !== "versus") {  // a level-up waits to draw its cards
         const i = this.heroes.findIndex(h => h.cardsDue > 0 && !h.down);
         if (i >= 0) {
-          const cards = drawCards(this.heroes[i]);
+          const cards = drawCards(this.heroes[i], 3, this.heroes[i].drawMin || 0);
           if (cards.length) { this.draw = {hero: i, cards, sel: Math.min(1, cards.length - 1)}; this.state = "cards"; sfx("rune"); }
           else this.heroes[i].cardsDue = 0;
         }
@@ -382,6 +388,8 @@ export class Game {
       this.updateRats(dt, true);
       updateCombat(this, dt, true, time);
       this.ambientSounds(dt);
+    } else if (st === "way") {
+      updateWay(this, dt);
     } else if (st === "cards") {
       updateCardDraw(this);
     } else if (st === "inventory") {
@@ -397,7 +405,8 @@ export class Game {
       if (input.hit("back")) this.toTitle();
     } else if (st === "cleared") {
       this.msgT -= dt;
-      if (this.msgT <= 0) this.enterFloor(this.dest, this.dest < this.level ? "up" : "down", this.heroes.map(h => pick(h, CARRY)));
+      // a new depth below: first the crossroads and the waystation on the way down (waystations.js)
+      if (this.msgT <= 0) { if (this.dest > this.level && !this.floors[this.dest]) openCrossroads(this, this.dest); else this.enterDest(); }
     } else if (st === "dead" || st === "won" || st === "victory") {
       // permadeath: a fallen run starts again from the first sewer, with new identities to learn
       if (input.hit("confirm")) { if (this.mode === "versus") this.startVersus(); else this.startRun(1, true, this.players); }
@@ -405,6 +414,9 @@ export class Game {
     }
     // fade in after a level loads; fade out at the end of a cleared level
     this.fade = st === "cleared" ? Math.max(this.fade, 1 - this.msgT / .8) : Math.max(0, this.fade - dt * 1.6);
+    if (this.state === "play") this.heroes.forEach(h => this.announceSynergies(h));
+    this.silverFlash = Math.max(0, (this.silverFlash || 0) - dt);
+    if (this.synPop && !(this.banner > 0)) { this.synPop.t -= dt; if (this.synPop.t <= 0) this.synPop = null; }  // waits for the depth's title
     for (const t of this.toasts) t.t -= dt;
     if (this.found) this.found.t -= dt;
     if (this.state === "play" && this.mode !== "versus") {
@@ -428,6 +440,25 @@ export class Game {
     lanterns(this.lv, this.heroes, time, combatLights(this));
     this.heroes.forEach((h, i) => { if (h.flareHit) { h.flareHit = false; this.flareStrike(h, i); } });
     updateFx(this.heroes[0], dt);
+  }
+
+  enterDest() { this.enterFloor(this.dest, this.dest < this.level ? "up" : "down", this.heroes.map(h => pick(h, CARRY))); }
+  // a synergy just woke: a banner across the middle of the screen, Gungeon style
+  announceSynergies(h) {
+    const ids = (h.synergies || []).map(s => s.id), seen = h.synSeen || [];
+    const fresh = (h.synergies || []).filter(s => !seen.includes(s.id));
+    h.synSeen = ids;
+    if (!fresh.length) return;
+    this.synPop = {s: fresh[0], t: 3.2}; sfx("levelup"); sfx("relic");
+    const [x, y] = heroCenter(h);
+    for (let k = 0; k < 3; k++) this.burst(x, y, [1, .85, .4]);
+    this.puff("spark", x, y, 24, [[1, .85, .4], [1, .95, .7]], 1.4);
+  }
+  // silver, Gungeon's shells: every kill and chest pays into the party's purse
+  addSilver(n, x, y) {
+    if (this.mode === "versus" || this.mode === "title" || !n) return;
+    this.silver = (this.silver || 0) + n; this.silverFlash = .5;
+    if (x !== undefined) this.puff("spark", x, y, Math.min(10, 2 + n), [[.85, .9, .95], [.7, .76, .82]], .7);
   }
 
   // a flare dazzles every creature its light falls on; one standing in another's shadow is spared. Shadow
@@ -548,7 +579,7 @@ export class Game {
       // the lantern flare: whatever stands in its light when it goes off is dazzled (resolved once the light is cast)
       h.flareCd = Math.max(0, (h.flareCd || 0) - dt); h.flare = Math.max(0, (h.flare || 0) - dt);
       if (input.flareHit(i, solo) && h.flareCd <= 0 && h.oil > 0) {
-        h.oil = Math.max(0, h.oil - FLARE_OIL); h.flare = FLARE_TIME; h.flareCd = FLARE_CD; h.flareHit = true;
+        h.oil = Math.max(0, h.oil - FLARE_OIL); h.flare = FLARE_TIME; h.flareCd = h.flareMax = FLARE_CD * (1 - statOf(h, "flareCd")); h.flareHit = true;
         this.shake = Math.max(this.shake, .25); sfx("flare");
         this.puff("spark", h.fx + 5, h.fy - 6, 14, [[1, .97, .85], [1, .85, .5]], 2.2);
       }
@@ -767,6 +798,12 @@ export class Game {
         this.dropGear(tx * T + 8, ty * T + 14, vt.boss ? 2 : Math.random() < .4 ? 1 : 0);
         for (let k = 0; k < 3; k++) this.burst(tx * T + 8, ty * T + 4, [1, .8, .3]);
         this.toast("THE CHEST SPILLS ITS HOARD", C.key, "relic");
+        this.addSilver(vt.boss ? 50 : 15 + this.level * 3, tx * T + 8, ty * T + 4);
+        if (this.floorMods && this.floorMods[this.level] === "thorns" && !vt.thornPaid) {
+          vt.thornPaid = true;
+          for (const h of this.heroes) if (!h.down) { h.cardsDue++; h.drawMin = Math.max(h.drawMin || 0, 1); }
+          this.toast("THE THORNS REWARD YOU: A RARE CARD", "#d86a4a");
+        }
       }
     });
   }
@@ -934,6 +971,10 @@ export class Game {
       text(ctx, this.mode === "coop" ? `P${v.hero + 1} - DEPTH ${ROMAN(this.level)}` : split ? `P${v.hero + 1}` : `DEPTH ${ROMAN(this.level)}`,
         x + 16, 16, views.length > 1 ? (v.hero ? C.p2 : C.p1) : C.text, 4);
       text(ctx, `KEYS ${Math.min(kc, lv.need)}/${lv.need}`, x + 16, 44, kc >= lv.need ? C.key : C.dim, 3);
+      if (this.mode !== "versus") {  // the party's silver, flashing as it comes in
+        const sx = x + 16 + textW(`KEYS ${Math.min(kc, lv.need)}/${lv.need}`, 3) + 34;
+        text(ctx, `SILVER ${this.silver || 0}`, sx, 44, this.silverFlash > 0 ? "#ffffff" : "#c8d2dc", 3);
+      }
       if (h.down) {  // fallen: show how close the revive is
         textC(ctx, "YOU ARE DOWN", x + v.w / 2, OUT_H / 2 + 90, C.warn, 6);
         textC(ctx, "YOUR PARTNER CAN STAND BY YOU TO REVIVE YOU", x + v.w / 2, OUT_H / 2 + 160, C.dim, 3);
@@ -955,7 +996,7 @@ export class Game {
       ctx.fillStyle = "#000"; ctx.fillRect(fx - 3, 13, fw + 6, 22);
       ctx.fillStyle = "#1a1410"; ctx.fillRect(fx, 16, fw, 16);
       ctx.fillStyle = ready ? (Math.floor(time * 2) % 2 && h.oil > 0 ? "#fff6d6" : "#f0dfa0") : "#6f6650";
-      ctx.fillRect(fx, 16, fw * (ready ? 1 : 1 - h.flareCd / FLARE_CD), 16);
+      ctx.fillRect(fx, 16, fw * (ready ? 1 : 1 - h.flareCd / (h.flareMax || FLARE_CD)), 16);
       const lab = touch.on ? "FLARE" : v.hero ? "P2 FLARE" : "Q FLARE";
       if (v.w > 1200) text(ctx, lab, fx - textW(lab, 3) - 12, 16, ready ? C.key : C.dim, 3);
       if (h.oil <= 0) textC(ctx, "YOUR LANTERN IS DRY", x + v.w / 2, OUT_H / 2 + 120, Math.floor(time * 3) % 2 ? C.warn : "#802020", 4);
@@ -1047,6 +1088,17 @@ export class Game {
       shade(.6);
       textC(ctx, `P${this.winner + 1} ESCAPES!`, cx, 420, this.winner ? C.p2 : C.p1, 12);
       textC(ctx, "ENTER FOR A REMATCH - Q FOR TITLE", cx, 560, C.dim, 4);
+    }
+    if (this.state === "way") drawWay(this, ctx, time);
+    if (this.synPop && this.state === "play" && !(this.banner > 0)) {  // a synergy woke: its name, and what it adds
+      const p = this.synPop, a = Math.min(1, p.t / .4, (3.2 - p.t) / .2), y = OUT_H * .3;
+      ctx.globalAlpha = Math.max(0, a);
+      ctx.fillStyle = "rgba(20,14,6,.82)"; ctx.fillRect(cx - 520, y - 20, 1040, 150);
+      ctx.strokeStyle = "#e8c860"; ctx.lineWidth = 3; ctx.strokeRect(cx - 514, y - 14, 1028, 138);
+      textC(ctx, "SYNERGY!", cx, y, "#ffe08a", 5);
+      textC(ctx, p.s.name, cx, y + 44, "#f3e6b8", 7);
+      textC(ctx, synergyLines(p.s).join(" - ").toUpperCase(), cx, y + 100, "#c9b06a", 3);
+      ctx.globalAlpha = 1;
     }
     if (this.state === "cards") drawCardDraw(this, ctx, time);
     if (this.state === "inventory") drawInventory(this, ctx, time);

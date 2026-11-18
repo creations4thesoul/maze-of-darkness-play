@@ -330,7 +330,7 @@ function compose(game, sx0, sy0, cw, ch, time, seen) {
     const bob = float ? Math.round(Math.sin(time * 3 + f.ph) * 1.5) : f.type === "crawler" ? 0 : (Math.floor(time * 2.2 + f.ph) % 2);
     const px = shadeSprite(spr, FOE_PAL, "foe", {moss: MOSSY}), pose = poseOf(f, time);
     add(Math.floor(f.y / T), {px, x: Math.round(f.x + pose.dx) - (spr[0].length >> 1), y: Math.round(f.y + pose.dy) + Math.max(2, spec.r >> 1) + bob,
-      lit: !float && f.type !== "lurker" && !spec.boss, white: f.flash > 0, tint: pose.tint, flip: (f.dx || 0) < 0 && !float});
+      lit: !float && f.type !== "lurker" && !spec.boss, white: f.flash > 0, tint: Math.max(pose.tint, f.elite ? .1 : 0), flip: (f.dx || 0) < 0 && !float});
   }
   game.heroes.forEach((h, i) => {
     if (h.down) {  // a fallen co-op partner lies in the muck, lantern guttering beside them

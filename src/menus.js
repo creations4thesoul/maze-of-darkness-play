@@ -6,7 +6,7 @@ import {text, textC, textW, UI_FONT} from "./render.js";
 import {sfx} from "./audio.js";
 import * as input from "./input.js";
 import {touch} from "./touch.js";
-import {CARDS, ICONS, TIERS, cardById, cardFx, deckCard, effectLines} from "./tarot.js";
+import {CARDS, ICONS, TIERS, cardById, cardFx, deckCard, effectLines, completes, partnersOf, synergyLines} from "./tarot.js";
 import {SLOTS, SLOT_NAMES, RARITY, BAG_SIZE, GEAR_ICONS, slotFor, describeStat} from "./gear.js";
 import {statOf, refreshStats} from "./stats.js";
 import {heroFrames, heroPalette, shadeHero} from "./heroes.js";
@@ -58,13 +58,13 @@ export function frame(ctx, x, y, w, h, sel = false, tier = -1) {
 }
 // the cards' paintings (tools/tarot_paint.py), loaded once; until one arrives the card shows its pixel emblem
 const PAINT = {};
-function painting(id) {
+export function painting(id) {
   if (!PAINT[id]) { PAINT[id] = new Image(); PAINT[id].src = `art/tarot/${id}.jpg`; }
   return PAINT[id].complete && PAINT[id].naturalWidth ? PAINT[id] : null;
 }
 for (const c of CARDS) painting(c.id);  // start loading every painting now, so none is missing when first shown
 // a card's picture: its painting, cropped to fill the panel, or the emblem on a starry night until it loads
-function cardPicture(ctx, card, px, py, pw, ph, time) {
+export function cardPicture(ctx, card, px, py, pw, ph, time) {
   ctx.fillStyle = INK; ctx.fillRect(px - 4, py - 4, pw + 8, ph + 8);
   const img = painting(card.id);
   if (img) {
@@ -79,7 +79,7 @@ function cardPicture(ctx, card, px, py, pw, ph, time) {
 }
 // card lettering is set in a book serif, like the captions of an old fairy-tale book, so it reads at any size
 const SERIF = UI_FONT;  // the same face as every other word in the game
-function serifC(ctx, s, cx, y, size, col, {bold = false, italic = false, spacing = 0} = {}) {
+export function serifC(ctx, s, cx, y, size, col, {bold = false, italic = false, spacing = 0} = {}) {
   ctx.font = `${italic ? "italic " : ""}${bold ? "bold " : ""}${Math.round(size)}px ${SERIF}`;
   ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillStyle = col;
   if ("letterSpacing" in ctx) ctx.letterSpacing = `${spacing}px`;
@@ -87,7 +87,7 @@ function serifC(ctx, s, cx, y, size, col, {bold = false, italic = false, spacing
   if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
   ctx.textAlign = "start";
 }
-function serifWrap(ctx, s, width, size, italic) {
+export function serifWrap(ctx, s, width, size, italic) {
   ctx.font = `${italic ? "italic " : ""}${Math.round(size)}px ${SERIF}`;
   const out = [];
   let line = "";
@@ -131,9 +131,12 @@ export function tarotCard(ctx, x, y, w, h, card, sel = false, time = 0) {
     serifC(ctx, part, cx, ty, es, INK, {bold: true}); ty += es * 1.25;
   }
   const suit = {templar: "SWORDS", mage: "WANDS", hunter: "ARROWS"}[card.suit];
-  serifC(ctx, TIERS[tier].name + (suit ? `  ·  SUIT OF ${suit}` : ""), cx, Math.max(y + h - 46 * u, ty + 2 * u), 14 * u * tb, TIER_INK[tier], {bold: true, spacing: 2 * u});
+  const fsz = 14 * u * tb;  // the foot: rarity and suit, or just the rarity where a narrow card has no room
+  ctx.font = `bold ${Math.round(fsz)}px ${SERIF}`;
+  const foot = suit && ctx.measureText(`${TIERS[tier].name}  ·  SUIT OF ${suit}`).width + 40 * u < w - 70 * u ? `${TIERS[tier].name}  ·  SUIT OF ${suit}` : TIERS[tier].name;
+  serifC(ctx, foot, cx, Math.max(y + h - 46 * u, ty + 2 * u), fsz, TIER_INK[tier], {bold: true, spacing: 2 * u});
 }
-function gearIcon(ctx, item, x, y, s) {
+export function gearIcon(ctx, item, x, y, s) {
   pixels(ctx, GEAR_ICONS[item.kind], x, y, s, "#1a140e", rgb(item.col), {g: rgb(RARITY[item.rarity].col)});
 }
 function heroPortrait(ctx, h, x, y, s, time) {
@@ -141,16 +144,45 @@ function heroPortrait(ctx, h, x, y, s, time) {
   px.forEach((row, j) => row.forEach((p, i) => { if (p) { ctx.fillStyle = rgb(p.c); ctx.fillRect(x + i * s, y + j * s, s, s); } }));
 }
 
+// a gold banner over a card that would wake a synergy
+export function synergyRibbon(ctx, cx, y, name, time) {
+  const label = `SYNERGY: ${name}`;
+  ctx.font = `bold 20px ${SERIF}`;
+  const w = Math.max(220, ctx.measureText(label).width + 60), glow = .7 + .3 * Math.sin(time * 4);
+  ctx.save(); ctx.shadowColor = `rgba(255,214,110,${glow})`; ctx.shadowBlur = 22;
+  ctx.fillStyle = "#3a2a10"; ctx.fillRect(cx - w / 2 - 4, y - 4, w + 8, 40); ctx.restore();
+  ctx.fillStyle = "#c99a3a"; ctx.fillRect(cx - w / 2, y, w, 32);
+  ctx.fillStyle = "#3a2a10";
+  for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(cx + s * w / 2, y); ctx.lineTo(cx + s * (w / 2 - 12), y + 16); ctx.lineTo(cx + s * w / 2, y + 32); ctx.fill(); }
+  serifC(ctx, label, cx, y + 6, 20, "#20160a", {bold: true, spacing: 1});
+}
+// under a card: the cards it pairs with, gold for one already in the deck
+export function partnerHint(ctx, h, card, cx, y, size) {
+  const have = new Set(h.deck.map(e => e.id)), ps = partnersOf(card, h.cls).slice(0, 2);
+  ps.forEach((p, i) => serifC(ctx, `PAIRS WITH ${p.other.name}`, cx, y + i * size * 1.3, size, have.has(p.other.id) ? "#e8c860" : "#7a7058", {bold: true, spacing: 1}));
+}
+
 // ------------------------------------------------------------------ the level-up card draw
+// keep one of three, or pass them all by for a little silver (d.sel 3)
+const PASS_SILVER = 12;
 export function updateCardDraw(game) {
   const d = game.draw;
-  if (hit("left")) { d.sel = (d.sel + 2) % 3; sfx("menu"); }
-  if (hit("right")) { d.sel = (d.sel + 1) % 3; sfx("menu"); }
+  if (hit("left")) { d.sel = (d.sel + 3) % 4; sfx("menu"); }
+  if (hit("right")) { d.sel = (d.sel + 1) % 4; sfx("menu"); }
+  if (hit("down")) { d.sel = 3; sfx("menu"); }
+  if (hit("up") && d.sel === 3) { d.sel = 1; sfx("menu"); }
   for (let k = 0; k < 3; k++) if (input.keyHit("Digit" + (k + 1)) || (d.rects && clickIn(d.rects[k]))) { d.sel = k; return take(game); }
+  if (clickIn(d.passRect)) { d.sel = 3; return take(game); }
   if (hit("ok")) take(game);
 }
 function take(game) {
-  const d = game.draw, h = game.heroes[d.hero], card = d.cards[d.sel];
+  const d = game.draw, h = game.heroes[d.hero];
+  h.drawMin = 0;
+  if (d.sel === 3) {
+    h.cardsDue--; game.silver += PASS_SILVER; sfx("coin"); game.toast(`YOU PASS THE CARDS BY: +${PASS_SILVER} SILVER`, "#c8d2dc");
+    game.draw = null; game.state = "play"; return;
+  }
+  const card = d.cards[d.sel];
   h.deck.push({id: card.id, tier: card.tier || 0}); h.cardsDue--; refreshStats(h);
   const fx = cardFx(card, card.tier);
   if (fx.deathSave) h.saves = (h.saves || 0) + fx.deathSave;
@@ -163,9 +195,23 @@ export function drawCardDraw(game, ctx, time) {
   textC(ctx, "THE CARDS ARE DRAWN", OUT_W / 2, 70, "#d9c48a", 8);
   textC(ctx, (game.heroes.length > 1 ? `P${d.hero + 1} - ` : "") + `LEVEL ${h.lvl}: KEEP ONE CARD FOR YOUR DECK`, OUT_W / 2, 150, "#a89c74", 4);
   const w = touch.on ? 440 : 360, hh = touch.on ? 680 : 580, gap = touch.on ? 36 : 60, x0 = OUT_W / 2 - (w * 3 + gap * 2) / 2;
-  d.rects = d.cards.map((c, k) => { const x = x0 + k * (w + gap); tarotCard(ctx, x, 230, w, hh, c, k === d.sel, time); return [x, 214, w, hh + 16]; });
-  textC(ctx, touch.on ? "TAP A CARD TO KEEP IT" : "LEFT / RIGHT TO CHOOSE - ENTER OR CLICK TO KEEP - 1 2 3", OUT_W / 2, 950, "#8a8064", touch.on ? 4 : 3);
-  textC(ctx, `YOUR DECK: ${h.deck.length} CARDS`, OUT_W / 2, 995, "#6f6650", 3);
+  d.rects = d.cards.map((c, k) => {
+    const x = x0 + k * (w + gap);
+    tarotCard(ctx, x, 230, w, hh, c, k === d.sel, time);
+    const syn = completes(h.deck, c);  // Gungeon-style: say so when a card would wake a synergy
+    if (syn.length) synergyRibbon(ctx, x + w / 2, 230 - (k === d.sel ? 50 : 34), syn[0].name, time);
+    else partnerHint(ctx, h, c, x + w / 2, 230 + hh + 10, touch.on ? 18 : 15);
+    return [x, 214, w, hh + 16];
+  });
+  // passing them all by
+  const pw = 360, px = OUT_W / 2 - pw / 2, py = touch.on ? 950 : 900, on = d.sel === 3;
+  ctx.fillStyle = "#000"; ctx.fillRect(px - 4, py - 4, pw + 8, 60);
+  ctx.fillStyle = on ? "#4d4430" : "#262118"; ctx.fillRect(px, py, pw, 52);
+  if (on) { ctx.strokeStyle = "#f0cf74"; ctx.lineWidth = 3; ctx.strokeRect(px + 2, py + 2, pw - 4, 48); }
+  serifC(ctx, `PASS: +${PASS_SILVER} SILVER`, OUT_W / 2, py + 13, 24, on ? "#f3e6b8" : "#c8d2dc", {bold: true, spacing: 1});
+  d.passRect = [px, py, pw, 52];
+  if (!touch.on) textC(ctx, "LEFT / RIGHT TO CHOOSE - ENTER OR CLICK TO KEEP - 1 2 3 - DOWN TO PASS", OUT_W / 2, 985, "#8a8064", 3);
+  textC(ctx, `YOUR DECK: ${h.deck.length} CARDS - SILVER ${game.silver}`, OUT_W / 2, 1030, "#6f6650", 3);
 }
 
 // ------------------------------------------------------------------ the equipment, loot bag and deck screen
@@ -272,8 +318,8 @@ export function drawInventory(game, ctx, time) {
 }
 function drawDeck(game, ctx, h, time) {
   if (!h.deck.length) { textC(ctx, "NO CARDS YET - LEVEL UP TO DRAW YOUR FIRST", OUT_W / 2, 500, "#a89c74", 5); return; }
-  // six to a row; the cards shrink as the deck grows so every row fits above the hint line
-  const v = game.inv, rows = Math.ceil(h.deck.length / 6), k0 = Math.min(1, 850 / (rows * 280 - 40));
+  // six to a row; the cards shrink as the deck grows so every row fits above the synergies and the hint line
+  const v = game.inv, rows = Math.ceil(h.deck.length / 6), k0 = Math.min(1, 720 / (rows * 280 - 40));
   const w = 150 * k0, hh = 240 * k0;
   v.cardRects = h.deck.map((e, k) => {
     const x = 70 + (k % 6) * (w + 26 * k0), y = 130 + Math.floor(k / 6) * (hh + 40 * k0);
@@ -283,6 +329,12 @@ function drawDeck(game, ctx, h, time) {
     serifC(ctx, card.num, x + w / 2, y + 166 * k0 + dy, 26 * k0, INK, {bold: true, spacing: 2 * k0});
     return [x, y, w, hh];
   });
-  tarotCard(ctx, 1240, 130, 600, 860, deckCard(h.deck[v.card]), false, time);
+  const sel = deckCard(h.deck[v.card]);
+  tarotCard(ctx, 1240, 130, 600, 800, sel, false, time);
+  partnerHint(ctx, h, sel, 1540, 950, 18);
+  // the synergies this deck has woken, and what they add
+  const syns = h.synergies || [];
+  text(ctx, syns.length ? "SYNERGIES" : "NO SYNERGIES YET - PAIR CARDS TO WAKE ONE", 70, 870, syns.length ? "#e8c860" : "#6f6650", 3);
+  syns.slice(0, 4).forEach((s, i) => text(ctx, `${s.name}: ${synergyLines(s).join(", ").toUpperCase()}`, 70 + (i % 2) * 580, 908 + (i >> 1) * 36, "#c9b06a", 2));
   text(ctx, `${h.deck.length} CARDS IN ${game.heroes.length > 1 ? `P${v.hero + 1}'S` : "YOUR"} DECK` + (touch.on ? "" : " - ARROWS TO LOOK - Q/E: EQUIPMENT - TAB TO CLOSE"), 70, 1010, "#8a8064", 2);
 }

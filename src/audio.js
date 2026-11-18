@@ -107,6 +107,7 @@ export function sfx(name, {vol = 1, pan = 0} = {}) {
     case "rune": tone("sine", 330, 990, .5, .1, pan); noise(.5, 2400, 3, .1, pan); tone("triangle", 1320, 1320, .4, .05, pan, .15); break;
     case "levelup": [392, 523, 659, 784, 1047].forEach((f, i) => tone("triangle", f, f * 1.01, .5, .09, 0, i * .08)); break;
     case "menu": tone("square", 880, 880, .04, .035); break;
+    case "coin": tone("triangle", 1320, 1320, .08, .07); tone("triangle", 1760, 1980, .18, .06, 0, .06); break;
     case "start": tone("triangle", 220, 440, .4, .12); noise(.4, 600, 1, .15, 0, 0, "lowpass"); break;
   }
 }

@@ -51,7 +51,7 @@ export const TIERS = [
   {name: "COMMON", col: [.62, .64, .54], power: 1},
   {name: "RARE", col: [.5, .66, .82], power: 1.5},
   {name: "LEGENDARY", col: [.9, .74, .36], power: 2}];
-const CAPS = {rollCd: .7, block: .9, drain: .8, cheapCast: .8, drawSpeed: .6, stealth: .7};
+export const CAPS = {rollCd: .7, block: .9, drain: .8, cheapCast: .8, drawSpeed: .6, stealth: .7, flareCd: .7, killHeal: .5};
 const FLAGS = new Set(["identify", "twinShot"]);
 const TIER_EXTRA = {priestess: {itemDur: .25}, kingarrows: {drawSpeed: .1}};  // added once per tier above common
 export function cardFx(card, tier = 0) {
@@ -66,9 +66,9 @@ export function cardFx(card, tier = 0) {
   if (tier) for (const [key, v] of Object.entries(TIER_EXTRA[card.id] || {})) out[key] = Math.round(v * tier * 100) / 100;
   return out;
 }
-export function rollTier(h) {
+export function rollTier(h, min = 0) {
   const r = Math.random(), lv = h.lvl || 1;
-  return r < .04 + lv * .004 ? 2 : r < .24 + lv * .012 ? 1 : 0;
+  return Math.max(min, r < .04 + lv * .004 ? 2 : r < .24 + lv * .012 ? 1 : 0);
 }
 // a deck entry is {id, tier}; this is its card with the tier attached
 export const deckCard = e => e && Object.assign({}, cardById(e.id), {tier: e.tier || 0});
@@ -100,18 +100,53 @@ const SAY = {
   pierce: v => `Arrows pierce ${v} more ${v > 1 ? "creatures" : "creature"}`,
   drawSpeed: v => `Bow draws ${pct(v)} faster`,
   twinShot: () => "Loose two arrows at once",
+  flareCd: v => `Flare refills ${pct(v)} faster`,
+  killHeal: v => `${pct(v)} of kills heal half a heart`,
+  silver: v => `+${pct(v)} silver`,
 };
 export const effectLines = (card, tier = 0) => Object.entries(cardFx(card, tier)).map(([k, v]) => SAY[k] ? SAY[k](v) : `${k} ${v}`);
 
-// three cards the hero hasn't drawn yet: the major arcana and their own suit, each with a rolled tier
-export function drawCards(h, n = 3) {
+// Synergies, Enter the Gungeon style: hold both cards of a pair and they wake a named bonus on top of their own.
+// Every card shows the partners it pairs with, so a deck can be steered toward them.
+export const SYNERGIES = [
+  {id: "lighthouse", name: "LIGHTHOUSE", needs: ["hermit", "hierophant"], fx: {light: .2, flareCd: .5}},
+  {id: "bloodpact", name: "BLOOD PACT", needs: ["devil", "death"], fx: {killHeal: .12}},
+  {id: "wildhunt", name: "THE WILD HUNT", needs: ["chariot", "moon"], fx: {speed: .1, stealth: .2}},
+  {id: "trollmight", name: "TROLL KING'S MIGHT", needs: ["emperor", "strength"], fx: {dmg: .2, thorns: 1}},
+  {id: "errand", name: "FOOL'S ERRAND", needs: ["fool", "chariot"], fx: {rollCd: .25, speed: .05}},
+  {id: "goldwheel", name: "GOLDEN WHEEL", needs: ["fortune", "star"], fx: {silver: .5, xp: .15}},
+  {id: "evergreen", name: "EVERGREEN", needs: ["empress", "temperance"], fx: {regen: 1.5}},
+  {id: "seconddawn", name: "SECOND DAWN", needs: ["judgement", "world"], fx: {deathSave: 1}},
+  {id: "oracle", name: "THE ORACLE", needs: ["priestess", "magician"], fx: {itemDur: .5, drop: .3}},
+  {id: "ironvow", name: "IRON VOW", needs: ["knightswords", "justice"], fx: {thorns: 1.5, block: .3}},
+  {id: "bladebear", name: "BLADE AND BEAR", needs: ["aceswords", "strength"], fx: {swingArc: .3, dmg: .1}},
+  {id: "wildfire", name: "WILDFIRE", needs: ["acewands", "knightwands"], fx: {splash: .4, burn: .5}},
+  {id: "keeperfire", name: "KEEPER'S FIRE", needs: ["queenwands", "hierophant"], fx: {fuelRegen: .5, drain: .2}},
+  {id: "volley", name: "VOLLEY", needs: ["acearrows", "kingarrows"], fx: {pierce: 1, drawSpeed: .15}},
+  {id: "moonarcher", name: "MOONLIT ARCHER", needs: ["queenarrows", "moon"], fx: {stealth: .2, dmg: .15}},
+  {id: "courtswords", name: "COURT OF SWORDS", needs: ["queenswords", "kingswords"], fx: {dmg: .2, maxHp: 2}},
+  {id: "courtwands", name: "COURT OF WANDS", needs: ["queenwands", "kingwands"], fx: {dmg: .2, maxHp: 2}},
+  {id: "courtarrows", name: "COURT OF ARROWS", needs: ["queenarrows", "kingarrows"], fx: {dmg: .2, maxHp: 2}},
+];
+// the synergies a deck has woken
+export const synergiesOf = deck => { const ids = new Set(deck.map(e => e.id)); return SYNERGIES.filter(s => s.needs.every(n => ids.has(n))); };
+// the synergies this card would wake if it joined the deck
+export const completes = (deck, card) => { const ids = new Set(deck.map(e => e.id)); return ids.has(card.id) ? [] : SYNERGIES.filter(s => s.needs.includes(card.id) && s.needs.every(n => n === card.id || ids.has(n))); };
+// the cards this one pairs with (for the hero's class), whether held or not
+export const partnersOf = (card, cls) => SYNERGIES.filter(s => s.needs.includes(card.id)).map(s => ({syn: s, other: cardById(s.needs.find(n => n !== card.id))}))
+  .filter(p => p.other && (!p.other.suit || p.other.suit === cls));
+export const synergyLines = s => Object.entries(s.fx).map(([k, v]) => SAY[k] ? SAY[k](v) : `${k} ${v}`);
+
+// three cards the hero hasn't drawn yet: the major arcana and their own suit, each with a rolled tier (min: the
+// lowest tier any of them may roll)
+export function drawCards(h, n = 3, min = 0) {
   const have = new Set((h.deck || []).map(e => e.id));
   const pool = CARDS.filter(c => (!c.suit || c.suit === h.cls) && !have.has(c.id));
   for (let i = pool.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [pool[i], pool[j]] = [pool[j], pool[i]]; }
   // a suit card turns up in most draws, so each class's own path stays in reach
   const suit = pool.findIndex(c => c.suit);
   if (suit > n - 1 && Math.random() < .7) [pool[0], pool[suit]] = [pool[suit], pool[0]];
-  return pool.slice(0, n).map(c => Object.assign({}, c, {tier: rollTier(h)}));
+  return pool.slice(0, n).map(c => Object.assign({}, c, {tier: rollTier(h, min)}));
 }
 
 // small pixel emblems for the cards' pictures (9x9; X = ink, o = gilt)
